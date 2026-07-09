@@ -13,12 +13,23 @@ import okhttp3.Request
 
 internal object RetrofitOkHttpHelper {
     private val authSkipList = mutableListOf<Request>()
+    @Volatile
+    private var clientInstance: OkHttpClient? = null
+    @Volatile
+    private var generation: Long = 0
 
     @JvmStatic
     val authHeaders = mutableMapOf<String, String>()
 
     @JvmStatic
-    val client: OkHttpClient by lazy { createClient() }
+    val client: OkHttpClient
+        get() = clientInstance ?: synchronized(this) {
+            clientInstance ?: createClient().also { clientInstance = it }
+        }
+
+    @JvmStatic
+    val clientGeneration: Long
+        get() = generation
 
     @JvmStatic
     var disableCompression: Boolean = false
@@ -27,6 +38,15 @@ internal object RetrofitOkHttpHelper {
     fun addAuthSkip(request: Request) {
         if (!authSkipList.contains(request))
             authSkipList.add(request)
+    }
+
+    @JvmStatic
+    fun unhold() = synchronized(this) {
+        clientInstance?.dispatcher()?.cancelAll()
+        clientInstance?.connectionPool()?.evictAll()
+        clientInstance = null
+        authSkipList.clear()
+        generation++
     }
 
     private val commonHeaders = mapOf(

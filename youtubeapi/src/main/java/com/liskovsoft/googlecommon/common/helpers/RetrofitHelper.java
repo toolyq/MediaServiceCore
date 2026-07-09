@@ -27,6 +27,10 @@ import com.liskovsoft.googlecommon.common.models.gen.AuthErrorResponse;
 import com.liskovsoft.googlecommon.common.models.gen.ErrorResponse;
 
 import java.io.IOException;
+import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.lang.annotation.Annotation;
 import java.net.ConnectException;
 import java.util.ArrayList;
@@ -197,6 +201,15 @@ public class RetrofitHelper {
     }
 
     public static <T> T create(Class<T> clazz) {
+        return createResettable(clazz);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T> T createResettable(Class<T> clazz) {
+        return (T) Proxy.newProxyInstance(clazz.getClassLoader(), new Class<?>[] { clazz }, new ResettableApi<>(clazz));
+    }
+
+    private static <T> T createDirect(Class<T> clazz) {
         Annotation[] annotations = clazz.getAnnotations();
 
         for (Annotation annotation : annotations) {
@@ -214,6 +227,60 @@ public class RetrofitHelper {
         }
 
         throw new IllegalStateException("RetrofitHelper: unknown class: " + clazz.getName());
+    }
+
+    private static class ResettableApi<T> implements InvocationHandler {
+        private final Class<T> mClazz;
+        private volatile T mDelegate;
+        private volatile long mGeneration = -1;
+
+        ResettableApi(Class<T> clazz) {
+            mClazz = clazz;
+        }
+
+        @Override
+        public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+            if (method.getDeclaringClass() == Object.class) {
+                return invokeObjectMethod(proxy, method, args);
+            }
+
+            try {
+                return method.invoke(getDelegate(), args);
+            } catch (InvocationTargetException e) {
+                throw e.getCause();
+            }
+        }
+
+        private T getDelegate() {
+            long currentGeneration = RetrofitOkHttpHelper.getClientGeneration();
+            T delegate = mDelegate;
+
+            if (delegate == null || mGeneration != currentGeneration) {
+                synchronized (this) {
+                    if (mDelegate == null || mGeneration != currentGeneration) {
+                        mDelegate = createDirect(mClazz);
+                        mGeneration = currentGeneration;
+                    }
+
+                    delegate = mDelegate;
+                }
+            }
+
+            return delegate;
+        }
+
+        private Object invokeObjectMethod(Object proxy, Method method, Object[] args) {
+            switch (method.getName()) {
+                case "toString":
+                    return mClazz.getName() + " proxy";
+                case "hashCode":
+                    return System.identityHashCode(proxy);
+                case "equals":
+                    return proxy == args[0];
+                default:
+                    throw new UnsupportedOperationException(method.getName());
+            }
+        }
     }
 
     private static <T> void handleResponseErrors(Response<T> response) {
